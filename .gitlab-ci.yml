@@ -1,0 +1,119 @@
+stages:
+  - analyze
+  - test
+
+variables:
+  # Note: use specific tags as docker images may not always be pulled due to "if-not-present" pull policy.
+  #       Thus, do not use tags like latest/beta, but check https://hub.docker.com/_/dart?tab=tags for latest.
+  DART_VERSION: '3.1.3'
+
+# Make PUB_CACHE cacheable in GitLab;
+# see also https://gitlab.com/gitlab-org/gitlab/-/merge_requests/77791/diffs and
+# https://dikman.medium.com/optimising-flutter-ci-by-caching-packages-8a1d537e0b23
+# Requires extending job to set DART_VERSION variable.
+.cache:
+  before_script:
+    - export PUB_CACHE="$CI_PROJECT_DIR/.pub-cache" # https://dart.dev/tools/pub/environment-variables
+    - export PATH="$PATH":"$PUB_CACHE/bin"
+  cache:
+    paths:
+      - $CI_PROJECT_DIR/.pub-cache/bin/
+      - $CI_PROJECT_DIR/.pub-cache/global_packages/
+      - $CI_PROJECT_DIR/.pub-cache/hosted/
+    key: "linux-x64-dart-$DART_VERSION-pub-cache"
+
+# Analyze (only) Dart packages, check formatting in Dart and Flutter packages.
+analyze:
+  extends: .cache
+  stage: analyze
+  tags: [ x64, linux, docker ]
+  image: dart:$DART_VERSION
+  script:
+    # Get dependencies
+    - dart pub get --directory=benchmark
+    - dart pub get --directory=generator
+    - dart pub get --directory=objectbox
+    - dart pub get --directory=objectbox_test
+    # Generate code
+    - cd benchmark
+    - dart run build_runner build
+    - cd ../objectbox_test
+    - dart run build_runner build
+    - cd ..
+    # Analyze Dart packages
+    - dart analyze benchmark
+    - dart analyze generator
+    - dart analyze objectbox
+    - dart analyze objectbox_test
+    # Check formatting of all packages
+    - dart format --set-exit-if-changed --fix .
+
+# Runs generator integration tests, e.g. ensures generator works as expected.
+test-generator:linux:x64:
+  extends: .cache
+  stage: test
+  tags: [ x64, linux, docker ]
+  image: dart:$DART_VERSION
+  script:
+    - ./install.sh
+    - ./generator/test.sh
+
+# Runs generator and objectbox unit tests.
+.test:
+  extends: .cache
+  stage: test
+  script:
+    - ./install.sh
+    # Generator tests
+    - cd generator
+    - dart pub get
+    - dart test
+    # ObjectBox tests
+    - cd ../objectbox_test
+    - dart pub get
+    - dart run build_runner build
+    # Run only one test suite (== test file) at a time.
+    # Print log for every completed test.
+    # Together, this will produce sequential log output, making it easier to attribute native logs.
+    - dart test --concurrency=1 --reporter expanded
+
+test-lib:linux:x64:
+  extends: .test
+  tags: [ x64, linux, docker ]
+  image: dart:$DART_VERSION
+  needs: ["test-generator:linux:x64"] # Wait for generator test
+  parallel:
+    matrix:
+      # Note: use specific versions instead of latest/beta tags as Docker images may not always be
+      # pulled due to "if-not-present" pull policy. Check https://hub.docker.com/_/dart?tab=tags.
+      # Always include lowest supported version (see sdk key in objectbox and generator
+      # pubspec.yaml, but may be higher due to dependencies).
+      - DART_VERSION: [ '2.18.6', '3.0.3', '3.1.3' ]
+
+# Runs tests with coverage on the objectbox package.
+# Note: As this requires to run tests, make sure this does not block the actual test jobs so test
+# issues can be seen.
+coverage:
+  extends: .cache
+  stage: test
+  needs: ["test-lib:linux:x64"] # Get test results first
+  tags: [ x64, linux, docker ]
+  image: dart:$DART_VERSION
+  script:
+    # Install coverage tools
+    - apt-get update
+    - apt-get install --yes --no-install-recommends lcov
+    - dart pub global activate coverage
+    # Prepare objectbox_test
+    - cd objectbox_test
+    - dart pub get
+    - dart run build_runner build
+    # Generate test coverage
+    - cd ../objectbox
+    - ../install.sh
+    - dart pub get
+    - ./tool/coverage.sh
+  coverage: /^\s*lines......:\s*\d+.\d+\%/
+  artifacts:
+    paths:
+      - objectbox/coverage/html/

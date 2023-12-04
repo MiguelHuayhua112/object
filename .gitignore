@@ -1,0 +1,22 @@
+**/.dart_tool/
+**/.packages
+**/.pub/
+**/pubspec.lock
+**/build/
+
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+download/
+lib/*.dll
+*.dll
+lib/*.dylib
+lib/*.so
+lib/*.a
+
+**/*.g.dart
+
+# backup created by publish.sh - ignore to avoid publishing
+**/pubspec.yaml.original
